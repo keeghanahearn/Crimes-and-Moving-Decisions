@@ -1,0 +1,317 @@
+#==============================================================================
+#  Crimes and Moving Decision in the United States: A Conditional Logit Approach Replication and Extension
+#==============================================================================
+# Keeghan Ahearn
+# Final Version 5/20/2024.
+
+#==============================================================================
+#   1. Packages
+#==============================================================================
+
+# Clear the working space
+rm(list = ls())
+
+# Set working directory
+
+setwd("C:/Users/Keeghan/Desktop/2024 Paper/")
+
+
+
+library(stargazer)
+library(sandwich)
+library(car)
+library(doBy)
+library(AER)
+library(gdata)
+library(plm)
+library(tidyverse)
+library(survival)
+library(dplyr)
+library(mlogit)
+library(data.table)
+library(tidyr)
+
+
+# turn off scientific notation except for big numbers
+options(scipen = 9)
+
+# function to calculate robust standard errors for regression
+cse <- function(reg) {
+  rob = sqrt(diag(vcovHC(reg, type = "HC1")))
+  return(rob)
+}
+
+
+#==============================================================================
+#   2. Data Loading and Wrangling
+#==============================================================================
+
+#Coding
+#ACS_master <- fread('usa_00018.csv', header=T, sep=',')
+
+#save(ACS_master, file = "ACS_master.RData")
+load("ACS_master.RData")
+
+#Subset
+General <- subset(ACS_master, YEAR >2010 & AGE>20 & MIGRATE1 != 4 & MIGRATE1 != 0 & MIGRATE1 != 2 & STATEFIP != 11)
+
+#Add Categorical Variable for Moving
+General$Moved <- ifelse(General$MIGRATE1 == 3, 1, 0)
+
+#Lagged Crime data
+Crime_master <- fread('crime test.csv', header=T, sep=',')
+Crime_mig <- fread('crime mig.csv', header=T, sep=',')
+Crime_mig_1 <- fread('crime mig 1.csv', header=T, sep=',')
+
+#Lagged ACS Housing Data
+House_Destination <- fread('Destination 5 Year ACS Housing Value 2015 and 2010.csv', header=T, sep=',')
+House_Origin <- fread('Origin 5 Year ACS Housing Value 2015 and 2010.csv', header=T, sep=',')
+#House_Non_Mover_Origin <- fread('Non_Mover Origin 5 Year ACS Housing Value 2015 and 2010.csv', header=T, sep=',')
+
+House_Non_Mover_Origin <- House_Origin
+colnames(House_Non_Mover_Origin)[which(names(House_Non_Mover_Origin) == "MIGPLAC1")] <- "STATEFIP"
+
+#Lagged ACS Race Data
+Race_Destination <- fread('Destination ACS 2010 Race.csv', header=T, sep=',')
+Race_Origin <- fread('Origin ACS 2010 Race.csv', header=T, sep=',')
+Race_Non_Mover_Origin <- fread('Non Mover Origin ACS 2010 Race.csv', header=T, sep=',')
+
+
+#Median per capita income for each state
+per_cap_income <- fread('per income 2010-2020.csv', header=T, sep=',')
+Origin_per_cap_income <- fread('Origin per cap income 2010 - 2020.csv', header=T, sep=',')
+
+#convert from wide to long format
+per_cap_income <- per_cap_income %>% 
+  pivot_longer(
+    cols = `2010`:`2020`, 
+    names_to = "YEAR",
+    values_to = "value"
+  )
+
+Origin_per_cap_income <- Origin_per_cap_income %>% 
+  pivot_longer(
+    cols = `2010`:`2020`, 
+    names_to = "YEAR",
+    values_to = "value"
+  )
+
+per_cap_income <- transform(per_cap_income,
+                             YEAR = as.numeric(YEAR))
+
+Origin_per_cap_income <- transform(Origin_per_cap_income,
+                            YEAR = as.numeric(YEAR))
+
+
+#rename value column
+colnames(per_cap_income)[which(names(per_cap_income) == "value")] <- "State Income"
+colnames(Origin_per_cap_income)[which(names(Origin_per_cap_income) == "value")] <- "Origin State Income"
+
+#Non Mover Origin
+Income_Non_Mover_Origin <- Origin_per_cap_income
+colnames(Income_Non_Mover_Origin)[which(names(Income_Non_Mover_Origin) == "MIGPLAC1")] <- "STATEFIP"
+
+
+#Separate subsample into moved and did not move
+Movers <- subset(General, Moved == 1)
+NonMovers <-subset(General, Moved == 0)
+
+#Join the Variable data for each group
+Movers <- left_join(Movers, Crime_master, by = c('STATEFIP', 'YEAR'))
+Movers <- left_join(Movers, Crime_mig, by = c('MIGPLAC1', 'YEAR'))
+
+Movers <- left_join(Movers, per_cap_income, by = c('STATEFIP', 'YEAR'))
+Movers <- left_join(Movers, Origin_per_cap_income, by = c('MIGPLAC1', 'YEAR'))
+
+Movers <- left_join(Movers, House_Destination, by = c('STATEFIP', 'YEAR'))
+Movers <- left_join(Movers, House_Origin, by = c('MIGPLAC1', 'YEAR'))
+
+Movers <- left_join(Movers, Race_Destination, by = c('STATEFIP', 'YEAR'))
+Movers <- left_join(Movers, Race_Origin, by = c('MIGPLAC1', 'YEAR'))
+
+NonMovers <- left_join(NonMovers, Crime_master, by = c('STATEFIP', 'YEAR'))
+NonMovers <- left_join(NonMovers, Crime_mig_1, by = c('STATEFIP', 'YEAR'))
+
+NonMovers <- left_join(NonMovers, per_cap_income, by = c('STATEFIP', 'YEAR'))
+NonMovers <- left_join(NonMovers, Income_Non_Mover_Origin, by = c('STATEFIP', 'YEAR'))
+
+NonMovers <- left_join(NonMovers, House_Destination, by = c('STATEFIP', 'YEAR'))
+NonMovers <- left_join(NonMovers, House_Non_Mover_Origin, by = c('STATEFIP', 'YEAR'))
+
+NonMovers <- left_join(NonMovers, Race_Destination, by = c('STATEFIP', 'YEAR'))
+NonMovers <- left_join(NonMovers, Race_Non_Mover_Origin, by = c('STATEFIP', 'YEAR'))
+
+
+#merge rows of the two groups back together
+df<- bind_rows(Movers, NonMovers)
+
+#delete duplicate columns that are not needed
+df<- subset(df, select = -c(State.x.x, State.y.y, STATE.x, STATE.y, State.x.x.x, State.y.y.y))
+
+
+#obtain the crime ratio from destination to origin
+df$ViolentCrimeRatio <- df$ViolentCrime/df$OriginViolentCrime
+df$PropertyCrimeRatio <- df$PropertyCrime/df$OriginPropertyCrime
+
+#obtain the population ratio from destination to origin
+df$PopulationRatio <- df$Population.x/df$Population.y
+
+colnames(df)[which(names(df) == "State Income")] <- "StateIncome"
+colnames(df)[which(names(df) == "Origin State Income")] <- "OriginStateIncome"
+
+#obtain the lagged per capita income ratio from destination to origin
+df$PerCapitaIncomeRatio <- df$StateIncome/df$OriginStateIncome
+
+#obtain the black or african american alone ratio from destination to origin
+df$MinorityRatio <- df$`          BlackorAfricanAmericanalone`/df$`          O_BlackorAfricanAmericanalone`
+
+#obtain the black or african american alone ratio from destination to origin
+#df$MinorityRatio <- df$BlackorAfricanAmericanalone/df$O_BlackorAfricanAmericanalone
+
+#obtain the black or african american alone ratio from destination to origin
+df$HousingPriceRatio <- df$`   HousingMedianPriceindollars`/df$`   O_HousingMedianPriceindollars`
+
+
+#obtain the burglary ratio
+df$BurglaryRatio <- df$Burglary.x/df$Burglary.y
+
+#obtain the Motor vehicle theft ratio
+df$MotorVehicleTheftRatio <- df$`Motor
+vehicle
+theft.x`/df$`Motor
+vehicle
+theft.y`
+
+#obtain the murder ratio
+df$MurderRatio <- df$`Murder and
+nonnegligent
+manslaughter.x`/df$`Murder and
+nonnegligent
+manslaughter.y`
+
+#obtain the rape ratio
+df$RapeRatio <- df$`Forcible
+rape.x`/df$`Forcible
+rape.y`
+
+#obtain the assault ratio
+df$AssaultRatio <- df$`Aggravated
+assault.x`/df$`Aggravated
+assault.y`
+
+#remove NA values
+df <- na.omit(df)
+
+
+#subsample for age 21-65
+df1 <- subset(df, AGE <=65)
+
+#subsample for age >65
+df2 <- subset(df, AGE >65)
+
+#subsample for education below grade 12
+df3 <- subset(df, EDUC <06)
+
+#subsample for education above grade 12
+df4 <- subset(df, EDUC >06)
+
+
+#take random sample of 100k observations
+sampledf <- sample_n(df, 100000)
+#sample for age 21-65
+sampledf1 <- sample_n(df1, 100000)
+#sample for age >65
+sampledf2 <- sample_n(df2, 100000)
+#sample for education below grade 12
+sampledf3 <- sample_n(df3, 100000)
+#sample for education above grade 12
+sampledf4 <- sample_n(df4, 100000)
+
+#Generate Summary Statistics Table
+stargazer(df, type="text", omit=c("ViolentCrimeRatio","PropertyCrimeRatio"), keep=c("Population.x", "Population.y", "ViolentCrime", "OriginViolentCrime", "PropertyCrime",
+                                  "OriginPropertyCrime", "StateIncome", "OriginStateIncome", "HousingMedianPriceindollars",
+                                  "O_HousingMedianPriceindollars","BlackorAfricanAmericanalone", "O_BlackorAfricanAmericanalone",
+                                  "Moved"),
+          median=TRUE,
+          digits=2, title="Summary Statistics")
+
+
+
+#==============================================================================
+#   3. Regressions and Estimates
+#==============================================================================
+
+#OLS model
+lmmodel <- lm(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio, data = sampledf)
+
+
+#OLS Model with controls and fixed effects
+lmmodelfe <- plm(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio
+                 + MinorityRatio + HousingPriceRatio, 
+                    data = sampledf,
+                    index = c("STATEFIP", "YEAR"), 
+                    model = "within")
+
+
+#Conditional Logit model
+clogitmodel = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + strata(STRATA), data = sampledf)
+
+#Conditional Logit model with controls
+
+clogitmodelfe = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                     + HousingPriceRatio + strata(STRATA), data = sampledf)
+
+#Conditional Logit model with Age 21 - 65
+
+clogitmodelage = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                       + HousingPriceRatio + strata(STRATA), data = sampledf1)
+
+#Conditional Logit Model with Age >65
+
+clogitmodelage1 = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                       + HousingPriceRatio + strata(STRATA), data = sampledf2)
+
+#Conditional Logit model with EDUC <06 (below Grade 12)
+
+clogitmodeleduc = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                        + HousingPriceRatio + strata(STRATA), data = sampledf3)
+
+#Conditional Logit model with EDUC >06 (above Grade 12)
+clogitmodeleduc1 = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                        + HousingPriceRatio + strata(STRATA), data = sampledf4)
+
+#conditional logit model with violent crime and property crime variables
+clogitmodeldetail = clogit(Moved ~ ViolentCrimeRatio + PropertyCrimeRatio + BurglaryRatio + MotorVehicleTheftRatio
+                           + MurderRatio + RapeRatio + AssaultRatio + PopulationRatio + PerCapitaIncomeRatio + MinorityRatio
+                           + HousingPriceRatio + strata(STRATA), data = sampledf)
+
+#Regression estimates for LPM Model
+stargazer(lmmodel, lmmodelfe,  
+          se=list(cse(lmmodel),cse(lmmodelfe)),
+                  title="Crime effect on Interstate Migration", type="text",
+                  column.labels=c("Base", "Controls"),
+                  df=FALSE, digits=4)
+
+#Regression estimates for conditional logit model
+stargazer(clogitmodel, clogitmodelfe,
+          title="Crime effect on Interstate Migration", type="text",
+          column.labels=c("Base", "Controls"),
+          df=FALSE, digits=4)
+
+#Regression estimates for age
+stargazer(clogitmodelage, clogitmodelage1,
+          title="Crime effect on Interstate Migration", type="text",
+          column.labels=c("Below 65", "65 and Above"),
+          df=FALSE, digits=4)
+
+#Regression estimates for education
+stargazer(clogitmodeleduc, clogitmodeleduc1,
+          title="Crime effect on Interstate Migration", type="text",
+          column.labels=c("Below Grade 12", "Above Grade 12"),
+          df=FALSE, digits=4)
+
+#Regression estimates for detailed conditional logit model
+stargazer(clogitmodeldetail,
+          title="Crime effect on Interstate Migration", type="text",
+          column.labels=c("Controls"),
+          df=FALSE, digits=4)
